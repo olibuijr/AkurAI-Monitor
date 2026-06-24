@@ -17,6 +17,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rand = "0.9"
+hex = "0.4"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = "z"

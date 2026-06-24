@@ -1,4 +1,5 @@
 mod alert;
+mod auth;
 mod collectors;
 mod config;
 mod db;
@@ -6,7 +7,7 @@ mod routes;
 mod schema;
 mod tailer;
 
-use axum::{routing::get, Router};
+use axum::{middleware, routing::get, Router};
 use tower_http::services::{ServeDir, ServeFile};
 
 #[tokio::main]
@@ -127,7 +128,10 @@ async fn main() {
         .route("/api/metrics", get(routes::metrics))
         .route("/api/logs", get(routes::logs))
         .route("/api/alerts", get(routes::alerts))
-        .fallback_service(static_service);
+        .route("/auth/callback", get(auth::auth_callback))
+        .route("/auth/logout", get(auth::auth_logout))
+        .fallback_service(static_service)
+        .layer(middleware::from_fn(auth::auth_middleware));
 
     let listener = tokio::net::TcpListener::bind(&cfg.listen_addr).await.unwrap();
     tracing::info!("listening on {}", cfg.listen_addr);
