@@ -75,8 +75,18 @@ async fn follow(units: &[String]) -> std::io::Result<()> {
 fn parse_line(raw: &str) -> Option<(String, String, i64)> {
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
 
-    // MESSAGE is usually a string; skip binary (array) messages.
-    let message = v.get("MESSAGE")?.as_str()?.to_string();
+    // MESSAGE is a string when clean UTF-8, but journald encodes it as an array
+    // of byte values when it contains control chars (e.g. ANSI colour codes from
+    // a `tracing` subscriber). Handle both, then strip ANSI escapes.
+    let message = match v.get("MESSAGE")? {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(arr) => {
+            let bytes: Vec<u8> = arr.iter().filter_map(|n| n.as_u64().map(|b| b as u8)).collect();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        _ => return None,
+    };
+    let message = strip_ansi(&message);
     if message.is_empty() {
         return None;
     }
@@ -97,6 +107,27 @@ fn parse_line(raw: &str) -> Option<(String, String, i64)> {
         .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
     Some((source, message, ts))
+}
+
+/// Remove ANSI CSI escape sequences (ESC `[` … final-byte) from a log line.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(n) = chars.next() {
+                    if n.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out.trim().to_string()
 }
 
 fn persist_and_broadcast(entries: Vec<(String, String, i64)>) {
