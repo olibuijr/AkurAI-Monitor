@@ -8,7 +8,11 @@ let currentSpecs = [];
 let renderedBadgeKey = '';
 let chartTimer = null;
 let liveLogs = [];
-const LOG_CAP = 500;
+const LOG_CAP = 1000;
+let logRangeHours = 1;
+let logSearch = '';
+let logExcluded = new Set();
+let logSourceKey = '';
 let connState = 'connecting'; // 'live' | 'polling' | 'connecting'
 
 async function api(path) {
@@ -317,25 +321,101 @@ async function renderDashboard(seedMetrics) {
 }
 
 // ── Logs ───────────────────────────────────────────────────────────
-function renderLogsTable() {
-  let html = `<div class="refresh conn">${connLabel()}</div><h2>Live Logs</h2>`;
-  if (liveLogs.length === 0) {
-    html += '<div class="empty">No log entries</div>';
-  } else {
-    html += '<table><tr><th>Time</th><th>Source</th><th>Line</th></tr>';
-    for (const l of liveLogs) {
-      const src = l.source.split('/').pop();
-      html += `<tr><td style="white-space:nowrap">${ts(l.ts)}</td><td>${src}</td><td>${escapeHtml(l.line)}</td></tr>`;
-    }
-    html += '</table>';
+const LOG_RANGES = [[1, '1h'], [6, '6h'], [24, '24h']];
+
+function logSources() {
+  return [...new Set(liveLogs.map((l) => l.source))].sort();
+}
+
+function srcName(source) {
+  return source.split('/').pop();
+}
+
+function renderLogRows() {
+  const tbody = document.getElementById('log-rows');
+  const countEl = document.getElementById('log-count');
+  if (!tbody) return;
+
+  const rows = liveLogs.filter(
+    (l) => !logExcluded.has(l.source) && (logSearch === '' || l.line.toLowerCase().includes(logSearch))
+  );
+
+  if (countEl) countEl.textContent = `${rows.length} line${rows.length === 1 ? '' : 's'}`;
+
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">No matching log entries</td></tr>';
+    return;
   }
-  app.innerHTML = html;
+  tbody.innerHTML = rows
+    .map(
+      (l) =>
+        `<tr><td class="t">${ts(l.ts)}</td><td class="s">${srcName(l.source)}</td><td class="line">${escapeHtml(l.line)}</td></tr>`
+    )
+    .join('');
+}
+
+function renderLogsLayout() {
+  const sources = logSources();
+  logSourceKey = sources.join('|');
+
+  const counts = {};
+  for (const l of liveLogs) counts[l.source] = (counts[l.source] || 0) + 1;
+
+  let sidebar = '<aside class="log-filters">';
+  sidebar += '<div class="fgroup"><label>Range</label><div class="ranges">';
+  for (const [h, lbl] of LOG_RANGES) {
+    sidebar += `<button class="range${h === logRangeHours ? ' active' : ''}" data-hours="${h}">${lbl}</button>`;
+  }
+  sidebar += '</div></div>';
+  sidebar += `<div class="fgroup"><label>Search</label><input id="log-search" type="search" placeholder="filter text…" value="${escapeHtml(logSearch)}"></div>`;
+  sidebar += '<div class="fgroup"><label>Sources</label><div class="sources">';
+  if (sources.length === 0) {
+    sidebar += '<span class="empty-mini">none yet</span>';
+  } else {
+    for (const s of sources) {
+      const checked = logExcluded.has(s) ? '' : 'checked';
+      sidebar += `<label class="src"><input type="checkbox" data-source="${escapeHtml(s)}" ${checked}><span>${srcName(s)}</span><em>${counts[s] || 0}</em></label>`;
+    }
+  }
+  sidebar += '</div></div></aside>';
+
+  const content =
+    '<div class="log-content">' +
+    `<div class="log-head"><span class="conn">${connLabel()}</span><span id="log-count" class="log-count"></span></div>` +
+    '<div class="log-scroll"><table class="logtable"><colgroup><col class="c-t"><col class="c-s"><col class="c-l"></colgroup>' +
+    '<thead><tr><th>Time</th><th>Source</th><th>Line</th></tr></thead>' +
+    '<tbody id="log-rows"></tbody></table></div></div>';
+
+  app.innerHTML = `<div class="logs-layout">${sidebar}${content}</div>`;
+
+  app.querySelectorAll('.log-filters button.range').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      logRangeHours = Number(btn.dataset.hours);
+      renderLogs();
+    });
+  });
+  const search = document.getElementById('log-search');
+  if (search) {
+    search.addEventListener('input', () => {
+      logSearch = search.value.trim().toLowerCase();
+      renderLogRows();
+    });
+  }
+  app.querySelectorAll('.log-filters input[type="checkbox"]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const src = cb.dataset.source;
+      if (cb.checked) logExcluded.delete(src); else logExcluded.add(src);
+      renderLogRows();
+    });
+  });
+
+  renderLogRows();
 }
 
 async function renderLogs() {
-  const data = await api('/api/logs?hours=1');
+  const data = await api(`/api/logs?hours=${logRangeHours}`);
   liveLogs = data.logs || []; // newest first
-  renderLogsTable();
+  renderLogsLayout();
 }
 
 function handleLogBatch(data) {
@@ -344,7 +424,9 @@ function handleLogBatch(data) {
   if (incoming.length === 0) return;
   // incoming is chronological (oldest first); prepend newest-first
   liveLogs = incoming.slice().reverse().concat(liveLogs).slice(0, LOG_CAP);
-  renderLogsTable();
+  // rebuild the sidebar only if a new source appeared (keeps search focus otherwise)
+  if (logSources().join('|') !== logSourceKey) renderLogsLayout();
+  else renderLogRows();
 }
 
 // ── Alerts (full history view) ─────────────────────────────────────
