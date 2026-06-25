@@ -194,9 +194,10 @@ function sortMetrics(metrics) {
 
 function chartSpecs(names) {
   const specs = [
-    { title: 'CPU Usage', series: [{ name: 'cpu.usage', color: '--blue' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' },
-    { title: 'Memory', series: [{ name: 'mem.used_pct', color: '--green' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' },
+    { category: 'System', title: 'CPU Usage', series: [{ name: 'cpu.usage', color: '--blue' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' },
+    { category: 'System', title: 'Memory', series: [{ name: 'mem.used_pct', color: '--green' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' },
     {
+      category: 'System',
       title: 'Load Average',
       series: [
         { name: 'load.1m', color: '--blue' },
@@ -209,12 +210,13 @@ function chartSpecs(names) {
   ];
 
   for (const n of names.filter((n) => n.startsWith('disk.') && n.endsWith('.used_pct')).sort()) {
-    specs.push({ title: metricLabel(n), series: [{ name: n, color: '--yellow' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' });
+    specs.push({ category: 'Storage', title: metricLabel(n), series: [{ name: n, color: '--yellow' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' });
   }
 
   const ifaces = [...new Set(names.filter((n) => n.startsWith('net.')).map((n) => n.split('.')[1]))].sort();
   for (const iface of ifaces) {
     specs.push({
+      category: 'Network',
       title: `Network ${iface}`,
       series: [
         { name: `net.${iface}.rx_bytes`, color: '--green', label: 'RX' },
@@ -228,12 +230,14 @@ function chartSpecs(names) {
   // DNS (akurai-dns) — only when its metrics are flowing.
   if (names.some((n) => n.startsWith('dns.'))) {
     specs.push({
+      category: 'DNS',
       title: 'DNS Query Rate',
       series: [{ name: 'dns.qps', color: '--blue', label: 'queries/s' }],
       min: 0,
       fmt: (v) => v.toFixed(1) + '/s',
     });
     specs.push({
+      category: 'DNS',
       title: 'DNS Response Codes',
       series: [
         { name: 'dns.rcode.noerror', color: '--green', label: 'NOERROR' },
@@ -245,6 +249,7 @@ function chartSpecs(names) {
       fmt: (v) => v.toFixed(0),
     });
     specs.push({
+      category: 'DNS',
       title: 'DNS Query Types',
       series: [
         { name: 'dns.qtype.a', color: '--blue', label: 'A' },
@@ -257,6 +262,7 @@ function chartSpecs(names) {
       fmt: (v) => v.toFixed(0),
     });
     specs.push({
+      category: 'DNS',
       title: 'DNS Latency',
       series: [
         { name: 'dns.latency_us.avg', color: '--green', label: 'avg' },
@@ -269,6 +275,20 @@ function chartSpecs(names) {
   }
 
   return specs;
+}
+
+// Render order for chart category sections; unknown categories follow, sorted.
+const CATEGORY_ORDER = ['System', 'Storage', 'Network', 'DNS'];
+function orderedCategories(specs) {
+  const present = [...new Set(specs.map((s) => s.category || 'Other'))];
+  return present.sort((a, b) => {
+    const ai = CATEGORY_ORDER.indexOf(a);
+    const bi = CATEGORY_ORDER.indexOf(b);
+    if (ai >= 0 && bi >= 0) return ai - bi;
+    if (ai >= 0) return -1;
+    if (bi >= 0) return 1;
+    return a.localeCompare(b);
+  });
 }
 
 // DNS emits ~23 series for charts; only these two are worth a status card —
@@ -358,12 +378,19 @@ async function renderDashboard(seedMetrics) {
   for (const [h, label] of RANGES) {
     html += `<button class="range${h === rangeHours ? ' active' : ''}" data-hours="${h}">${label}</button>`;
   }
-  html += '</div></div><div class="charts">';
-  currentSpecs.forEach((spec, i) => {
+  html += '</div></div>';
+  const chartCard = (spec, i) => {
     const legend = spec.series.filter((s) => s.label).map((s) => `<span class="lg"><i style="background:${cssVar(s.color)}"></i>${s.label}</span>`).join('');
-    html += `<div class="chart-card"><div class="chart-title">${spec.title}${legend ? `<span class="legend">${legend}</span>` : ''}</div><canvas id="chart-${i}"></canvas></div>`;
-  });
-  html += '</div><div id="alerts-section"></div>';
+    return `<div class="chart-card"><div class="chart-title">${spec.title}${legend ? `<span class="legend">${legend}</span>` : ''}</div><canvas id="chart-${i}"></canvas></div>`;
+  };
+  for (const cat of orderedCategories(currentSpecs)) {
+    html += `<h3 class="chart-group">${cat}</h3><div class="charts">`;
+    currentSpecs.forEach((spec, i) => {
+      if ((spec.category || 'Other') === cat) html += chartCard(spec, i);
+    });
+    html += '</div>';
+  }
+  html += '<div id="alerts-section"></div>';
 
   app.innerHTML = html;
 
