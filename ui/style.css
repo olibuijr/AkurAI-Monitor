@@ -118,4 +118,6 @@ td { padding: 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.85rem
 
 .empty { color: var(--text-dim); text-align: center; padding: 2rem; }
 
-.refresh { color: var(--text-dim); font-size: 0.75rem; text-align: right; margin-bottom: 1rem; }
+.refresh { color: var(--text-dim); font-size: 0.75rem; text-align: right; margin-bottom: 1rem; display: flex; align-items: center; justify-content: flex-end; gap: 0.4rem; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); display: inline-block; }
+.live-dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }

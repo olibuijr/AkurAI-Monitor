@@ -1,8 +1,15 @@
 const $ = (s) => document.querySelector(s);
 const app = $('#app');
 
-// Selected time range for the trend charts (hours)
+// View + live state
 let rangeHours = 24;
+let currentView = 'dashboard';
+let currentSpecs = [];
+let renderedBadgeKey = '';
+let chartTimer = null;
+let liveLogs = [];
+const LOG_CAP = 500;
+let connState = 'connecting'; // 'live' | 'polling' | 'connecting'
 
 async function api(path) {
   const res = await fetch(path);
@@ -67,9 +74,17 @@ function metricLabel(name) {
   return name;
 }
 
+function connLabel() {
+  if (connState === 'live') return '<span class="live-dot live"></span>Live';
+  if (connState === 'polling') return '<span class="live-dot"></span>Polling (10s)';
+  return '<span class="live-dot"></span>Connecting…';
+}
+
+function updateConnUI() {
+  document.querySelectorAll('.conn').forEach((el) => { el.innerHTML = connLabel(); });
+}
+
 // ── Canvas line chart ──────────────────────────────────────────────
-// series: [{ color, points: [{ts, value}] }]
-// opts: { min, max, fmt }
 function lineChart(canvas, series, opts = {}) {
   const dpr = window.devicePixelRatio || 1;
   const W = canvas.clientWidth || 300;
@@ -103,7 +118,6 @@ function lineChart(canvas, series, opts = {}) {
   const x = (t) => padL + (maxT === minT ? plotW : ((t - minT) / (maxT - minT)) * plotW);
   const y = (v) => padT + plotH - ((v - minV) / (maxV - minV)) * plotH;
 
-  // grid + y-axis labels
   ctx.strokeStyle = cssVar('--border');
   ctx.fillStyle = cssVar('--text-dim');
   ctx.lineWidth = 1;
@@ -118,18 +132,15 @@ function lineChart(canvas, series, opts = {}) {
     ctx.fillText(opts.fmt ? opts.fmt(v) : v.toFixed(0), 4, yy + 3);
   }
 
-  // x-axis time labels (start / end)
   const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   ctx.fillText(fmtTime(minT), padL, H - 6);
   const endLabel = fmtTime(maxT);
   ctx.fillText(endLabel, W - padR - ctx.measureText(endLabel).width, H - 6);
 
-  // series
   for (const s of series) {
     if (s.points.length === 0) continue;
     const color = s.color.startsWith('--') ? cssVar(s.color) : s.color;
 
-    // area fill under the line
     ctx.beginPath();
     ctx.moveTo(x(s.points[0].ts), padT + plotH);
     for (const p of s.points) ctx.lineTo(x(p.ts), y(p.value));
@@ -138,7 +149,6 @@ function lineChart(canvas, series, opts = {}) {
     ctx.fillStyle = color + '22';
     ctx.fill();
 
-    // line
     ctx.beginPath();
     s.points.forEach((p, i) => {
       const xx = x(p.ts), yy = y(p.value);
@@ -154,6 +164,17 @@ function lineChart(canvas, series, opts = {}) {
 // ── Dashboard ──────────────────────────────────────────────────────
 const cardOrder = ['cpu.usage', 'mem.used_pct', 'load.1m', 'uptime.seconds'];
 const RANGES = [[1, '1h'], [6, '6h'], [24, '24h'], [168, '7d']];
+
+function sortMetrics(metrics) {
+  return [...metrics].sort((a, b) => {
+    const ai = cardOrder.indexOf(a.name);
+    const bi = cardOrder.indexOf(b.name);
+    if (ai >= 0 && bi >= 0) return ai - bi;
+    if (ai >= 0) return -1;
+    if (bi >= 0) return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
 
 function chartSpecs(names) {
   const specs = [
@@ -171,12 +192,10 @@ function chartSpecs(names) {
     },
   ];
 
-  // one chart per disk mount (used_pct)
   for (const n of names.filter((n) => n.startsWith('disk.') && n.endsWith('.used_pct')).sort()) {
     specs.push({ title: metricLabel(n), series: [{ name: n, color: '--yellow' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' });
   }
 
-  // one chart per network interface (rx + tx overlaid)
   const ifaces = [...new Set(names.filter((n) => n.startsWith('net.')).map((n) => n.split('.')[1]))].sort();
   for (const iface of ifaces) {
     specs.push({
@@ -193,69 +212,42 @@ function chartSpecs(names) {
   return specs;
 }
 
-async function renderDashboard() {
-  const [status, alertData] = await Promise.all([api('/api/status'), api('/api/alerts?hours=24')]);
-  const metrics = status.metrics || [];
+function badgeKey(metrics) {
+  return metrics.map((m) => m.name).sort().join('|');
+}
 
-  if (metrics.length === 0) {
-    app.innerHTML = '<div class="empty">No metrics yet. Waiting for first collection cycle...</div>';
+function updateBadges(metrics) {
+  if (currentView !== 'dashboard') return;
+  if (badgeKey(metrics) !== renderedBadgeKey) {
+    renderDashboard(metrics); // metric set changed — rebuild
     return;
   }
-
-  const sorted = [...metrics].sort((a, b) => {
-    const ai = cardOrder.indexOf(a.name);
-    const bi = cardOrder.indexOf(b.name);
-    if (ai >= 0 && bi >= 0) return ai - bi;
-    if (ai >= 0) return -1;
-    if (bi >= 0) return 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  let html = '<div class="refresh">Auto-refreshes every 60s</div>';
-  html += '<h2>Current Status</h2><div class="grid">';
-  for (const m of sorted) {
-    const sev = severity(m.name, m.value);
-    html += `<div class="card"><div class="label">${metricLabel(m.name)}</div><div class="value ${sev}">${formatValue(m.name, m.value)}</div></div>`;
-  }
-  html += '</div>';
-
-  // range selector + chart grid
-  const names = metrics.map((m) => m.name);
-  const specs = chartSpecs(names);
-
-  html += '<div class="trend-head"><h2>Trends</h2><div class="ranges">';
-  for (const [h, label] of RANGES) {
-    html += `<button class="range${h === rangeHours ? ' active' : ''}" data-hours="${h}">${label}</button>`;
-  }
-  html += '</div></div><div class="charts">';
-  specs.forEach((spec, i) => {
-    const legend = spec.series.filter((s) => s.label).map((s) => `<span class="lg"><i style="background:${cssVar(s.color)}"></i>${s.label}</span>`).join('');
-    html += `<div class="chart-card"><div class="chart-title">${spec.title}${legend ? `<span class="legend">${legend}</span>` : ''}</div><canvas id="chart-${i}"></canvas></div>`;
-  });
-  html += '</div>';
-
-  // active alerts
-  const active = (alertData.alerts || []).filter((a) => !a.resolved_at);
-  if (active.length > 0) {
-    html += '<h2>Active Alerts</h2><table><tr><th>Rule</th><th>Metric</th><th>Value</th><th>Since</th></tr>';
-    for (const a of active) {
-      html += `<tr class="alert-active"><td>${a.rule_name}</td><td>${a.metric_name}</td><td>${a.value.toFixed(1)}</td><td>${ts(a.triggered_at)}</td></tr>`;
+  for (const m of metrics) {
+    const el = app.querySelector(`.value[data-badge="${m.name}"]`);
+    if (el) {
+      el.textContent = formatValue(m.name, m.value);
+      el.className = `value ${severity(m.name, m.value)}`;
+      el.dataset.badge = m.name;
     }
-    html += '</table>';
   }
+}
 
-  app.innerHTML = html;
+async function refreshAlerts() {
+  const el = $('#alerts-section');
+  if (!el) return;
+  const data = await api('/api/alerts?hours=24');
+  const active = (data.alerts || []).filter((a) => !a.resolved_at);
+  if (active.length === 0) { el.innerHTML = ''; return; }
+  let html = '<h2>Active Alerts</h2><table><tr><th>Rule</th><th>Metric</th><th>Value</th><th>Since</th></tr>';
+  for (const a of active) {
+    html += `<tr class="alert-active"><td>${a.rule_name}</td><td>${a.metric_name}</td><td>${a.value.toFixed(1)}</td><td>${ts(a.triggered_at)}</td></tr>`;
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
 
-  // wire range buttons
-  app.querySelectorAll('button.range').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      rangeHours = Number(btn.dataset.hours);
-      renderDashboard();
-    });
-  });
-
-  // fetch series data and draw (unique metric names only)
-  const wanted = [...new Set(specs.flatMap((s) => s.series.map((x) => x.name)))];
+async function drawCharts() {
+  const wanted = [...new Set(currentSpecs.flatMap((s) => s.series.map((x) => x.name)))];
   const seriesData = {};
   await Promise.all(
     wanted.map(async (name) => {
@@ -263,8 +255,7 @@ async function renderDashboard() {
       seriesData[name] = (d.metrics || []).map((m) => ({ ts: m.ts, value: m.value }));
     })
   );
-
-  specs.forEach((spec, i) => {
+  currentSpecs.forEach((spec, i) => {
     const canvas = document.getElementById(`chart-${i}`);
     if (!canvas) return;
     const series = spec.series.map((s) => ({ color: s.color, points: seriesData[s.name] || [] }));
@@ -272,25 +263,91 @@ async function renderDashboard() {
   });
 }
 
-async function renderLogs() {
-  const data = await api('/api/logs?hours=1');
-  const logs = data.logs || [];
+async function renderDashboard(seedMetrics) {
+  let metrics = seedMetrics;
+  if (!metrics) {
+    const status = await api('/api/status');
+    metrics = status.metrics || [];
+  }
 
-  let html = '<h2>Recent Logs (1 hour)</h2>';
-  if (logs.length === 0) {
+  if (metrics.length === 0) {
+    app.innerHTML = '<div class="empty">No metrics yet. Waiting for first collection cycle...</div>';
+    renderedBadgeKey = '';
+    return;
+  }
+
+  const sorted = sortMetrics(metrics);
+  renderedBadgeKey = badgeKey(metrics);
+  currentSpecs = chartSpecs(metrics.map((m) => m.name));
+
+  let html = `<div class="refresh conn">${connLabel()}</div>`;
+  html += '<h2>Current Status</h2><div class="grid">';
+  for (const m of sorted) {
+    const sev = severity(m.name, m.value);
+    html += `<div class="card"><div class="label">${metricLabel(m.name)}</div><div class="value ${sev}" data-badge="${m.name}">${formatValue(m.name, m.value)}</div></div>`;
+  }
+  html += '</div>';
+
+  html += '<div class="trend-head"><h2>Trends</h2><div class="ranges">';
+  for (const [h, label] of RANGES) {
+    html += `<button class="range${h === rangeHours ? ' active' : ''}" data-hours="${h}">${label}</button>`;
+  }
+  html += '</div></div><div class="charts">';
+  currentSpecs.forEach((spec, i) => {
+    const legend = spec.series.filter((s) => s.label).map((s) => `<span class="lg"><i style="background:${cssVar(s.color)}"></i>${s.label}</span>`).join('');
+    html += `<div class="chart-card"><div class="chart-title">${spec.title}${legend ? `<span class="legend">${legend}</span>` : ''}</div><canvas id="chart-${i}"></canvas></div>`;
+  });
+  html += '</div><div id="alerts-section"></div>';
+
+  app.innerHTML = html;
+
+  app.querySelectorAll('button.range').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      rangeHours = Number(btn.dataset.hours);
+      renderDashboard();
+    });
+  });
+
+  drawCharts();
+  refreshAlerts();
+
+  // periodic refresh of history-backed charts + alerts (badges update live via SSE)
+  clearInterval(chartTimer);
+  chartTimer = setInterval(() => { drawCharts(); refreshAlerts(); }, 60000);
+}
+
+// ── Logs ───────────────────────────────────────────────────────────
+function renderLogsTable() {
+  let html = `<div class="refresh conn">${connLabel()}</div><h2>Live Logs</h2>`;
+  if (liveLogs.length === 0) {
     html += '<div class="empty">No log entries</div>';
   } else {
     html += '<table><tr><th>Time</th><th>Source</th><th>Line</th></tr>';
-    for (const l of logs) {
+    for (const l of liveLogs) {
       const src = l.source.split('/').pop();
       html += `<tr><td style="white-space:nowrap">${ts(l.ts)}</td><td>${src}</td><td>${escapeHtml(l.line)}</td></tr>`;
     }
     html += '</table>';
   }
-
   app.innerHTML = html;
 }
 
+async function renderLogs() {
+  const data = await api('/api/logs?hours=1');
+  liveLogs = data.logs || []; // newest first
+  renderLogsTable();
+}
+
+function handleLogBatch(data) {
+  if (currentView !== 'logs') return;
+  const incoming = data.logs || [];
+  if (incoming.length === 0) return;
+  // incoming is chronological (oldest first); prepend newest-first
+  liveLogs = incoming.slice().reverse().concat(liveLogs).slice(0, LOG_CAP);
+  renderLogsTable();
+}
+
+// ── Alerts (full history view) ─────────────────────────────────────
 async function renderAlerts() {
   const data = await api('/api/alerts?hours=72');
   const alerts = data.alerts || [];
@@ -317,27 +374,65 @@ function escapeHtml(s) {
   return div.innerHTML;
 }
 
+// ── Live connection (SSE with polling fallback) ────────────────────
+function handleStatus(data) {
+  updateBadges(data.metrics || []);
+}
+
+let pollTimer = null;
+function startPolling() {
+  if (pollTimer) return;
+  connState = 'polling';
+  updateConnUI();
+  pollTimer = setInterval(async () => {
+    try {
+      const s = await api('/api/status');
+      handleStatus(s);
+      if (currentView === 'logs') await renderLogs();
+    } catch { /* ignore */ }
+  }, 10000);
+}
+
+function startLive() {
+  if (typeof EventSource === 'undefined') { startPolling(); return; }
+  let opened = false;
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { opened = true; connState = 'live'; updateConnUI(); };
+  es.addEventListener('status', (e) => { try { handleStatus(JSON.parse(e.data)); } catch {} });
+  es.addEventListener('log', (e) => { try { handleLogBatch(JSON.parse(e.data)); } catch {} });
+  es.onerror = () => {
+    if (!opened) { es.close(); startPolling(); } // stream blocked → fall back
+    else { connState = 'connecting'; updateConnUI(); } // transient: let it auto-reconnect
+  };
+}
+
+// ── Routing ────────────────────────────────────────────────────────
 function route() {
   const hash = location.hash || '#/';
   document.querySelectorAll('nav a').forEach((a) => {
     a.classList.toggle('active', a.getAttribute('href') === hash);
   });
 
-  if (hash.startsWith('#/logs')) renderLogs();
-  else if (hash.startsWith('#/alerts')) renderAlerts();
-  else renderDashboard();
+  clearInterval(chartTimer);
+
+  if (hash.startsWith('#/logs')) {
+    currentView = 'logs';
+    renderLogs();
+  } else if (hash.startsWith('#/alerts')) {
+    currentView = 'alerts';
+    renderAlerts();
+  } else {
+    currentView = 'dashboard';
+    renderDashboard();
+  }
 }
 
 window.addEventListener('hashchange', route);
-// redraw charts on resize when on the dashboard
 let resizeTimer;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    if (!(location.hash || '#/').startsWith('#/logs') && !(location.hash || '#/').startsWith('#/alerts')) renderDashboard();
-  }, 200);
+  resizeTimer = setTimeout(() => { if (currentView === 'dashboard') drawCharts(); }, 200);
 });
-route();
 
-// Auto-refresh every 60s
-setInterval(route, 60000);
+route();
+startLive();
