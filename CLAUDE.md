@@ -69,8 +69,8 @@ Authorization: Bearer $MONITOR_INGEST_TOKEN
 ```
 
 `ts` is optional (defaults to now). Lines are inserted and broadcast live. A
-remote box can ship with `journalctl -f -o json | <poster>` or the helper in
-`clients/pino-monitor-transport.mjs` (Node apps).
+remote box can ship with `journalctl -f -o json -u <unit> | <poster>` that POSTs
+batches to `/api/ingest` with the bearer token.
 
 ## Real-time
 
