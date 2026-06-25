@@ -45,22 +45,32 @@ nginx (TLS) → rust-monitor (:8800)
 | `MONITOR_INTERVAL` | `60` | Collection interval (seconds) |
 | `MONITOR_RETENTION_DAYS` | `30` | Metric retention |
 | `MONITOR_LOG_RETENTION_DAYS` | `7` | Log retention |
+| `MONITOR_JOURNAL_UNITS` | (empty) | Comma-separated systemd units to follow via journald (same-host log collection) |
 | `MONITOR_INGEST_TOKEN` | (empty) | Bearer token for `POST /api/ingest`; empty disables ingestion |
 | `MONITOR_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` | — | OIDC SSO config |
 
-## Log ingestion (shipping from other apps)
+## Collecting logs from other apps
 
-Other applications ship logs by POSTing to `/api/ingest` (token-authed, bypasses OIDC):
+Two paths, no per-app code required:
+
+**Same-host (preferred) — journald.** Other systemd services on this host log
+their stdout/stderr to journald. Set `MONITOR_JOURNAL_UNITS=akurai-idp.service,…`
+and the monitor follows `journalctl -f -o json` for those units, tagging each
+log line's source with the unit name. Zero changes in the apps. Requires read
+access to the journal (the service runs as root). See `src/journald.rs`.
+
+**Cross-host — HTTP ingest.** Remote apps POST to `/api/ingest` (token-authed,
+bypasses OIDC):
 
 ```
 POST /api/ingest
 Authorization: Bearer $MONITOR_INGEST_TOKEN
-{ "logs": [ { "source": "akurai-mail", "line": "INFO request ok …", "ts": 1750000000 } ] }
+{ "logs": [ { "source": "localai", "line": "INFO request ok …", "ts": 1750000000 } ] }
 ```
 
-`ts` is optional (defaults to now). Lines are inserted into the `logs` table and
-broadcast live to connected dashboards. Apps use a pino transport that batches
-and POSTs (see `clients/pino-monitor-transport.mjs`).
+`ts` is optional (defaults to now). Lines are inserted and broadcast live. A
+remote box can ship with `journalctl -f -o json | <poster>` or the helper in
+`clients/pino-monitor-transport.mjs` (Node apps).
 
 ## Real-time
 

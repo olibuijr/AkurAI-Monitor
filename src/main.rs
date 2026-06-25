@@ -3,6 +3,7 @@ mod auth;
 mod collectors;
 mod config;
 mod db;
+mod journald;
 mod routes;
 mod schema;
 mod stream;
@@ -44,6 +45,9 @@ async fn main() {
 
     // Initialize the live SSE broadcast channel
     stream::init();
+
+    // Follow journald for configured systemd units (other apps log here)
+    journald::spawn(cfg.journal_units.clone());
 
     // Spawn metric collector task.
     // Samples on a fast "live" cadence and broadcasts every snapshot to SSE
