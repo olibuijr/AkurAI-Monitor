@@ -50,5 +50,5 @@ nginx (TLS) → rust-monitor (:8800)
 
 - Binary MUST cross-compile with `x86_64-unknown-linux-musl`
 - Release profile: opt-level=z, LTO, strip, panic=abort
-- No auth — runs behind nginx on localhost only
-- Static UI: plain HTML + vanilla JS, no build step
+- Auth: OIDC/PKCE via auth.olibuijr.com (see src/auth.rs); behind nginx + TLS
+- Static UI: plain HTML + vanilla JS, no build step (charts are hand-rolled canvas, no chart lib)
