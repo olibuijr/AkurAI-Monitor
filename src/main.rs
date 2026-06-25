@@ -7,8 +7,23 @@ mod routes;
 mod schema;
 mod tailer;
 
-use axum::{middleware, routing::get, Router};
+use axum::{
+    http::{header, HeaderValue},
+    middleware,
+    response::Response,
+    routing::get,
+    Router,
+};
 use tower_http::services::{ServeDir, ServeFile};
+
+// Force browsers to revalidate static assets so a redeploy is picked up
+// immediately instead of serving a stale cached app.js / style.css.
+async fn add_no_cache(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
+}
 
 #[tokio::main]
 async fn main() {
@@ -139,7 +154,8 @@ async fn main() {
         .route("/auth/callback", get(auth::auth_callback))
         .route("/auth/logout", get(auth::auth_logout))
         .fallback_service(static_service)
-        .layer(middleware::from_fn(auth::auth_middleware));
+        .layer(middleware::from_fn(auth::auth_middleware))
+        .layer(middleware::map_response(add_no_cache));
 
     let listener = tokio::net::TcpListener::bind(&cfg.listen_addr).await.unwrap();
     tracing::info!("listening on {}", cfg.listen_addr);
