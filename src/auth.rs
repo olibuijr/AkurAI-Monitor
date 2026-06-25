@@ -15,9 +15,12 @@ use crate::config;
 const SESSION_COOKIE: &str = "monitor_session";
 const SESSION_MAX_AGE: u64 = 60 * 60 * 24; // 24 hours
 
-// In-memory session store: session_id -> email
-static SESSIONS: LazyLock<Mutex<HashMap<String, String>>> =
+// In-memory session store: session_id -> (email, created_at_unix)
+static SESSIONS: LazyLock<Mutex<HashMap<String, (String, i64)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+// Abandoned OIDC flows expire after 10 minutes
+const PENDING_FLOW_TTL: i64 = 600;
 
 fn generate_session_id() -> String {
     use rand::Rng;
@@ -77,8 +80,8 @@ mod base64_encode {
     }
 }
 
-// Pending OIDC flows: state -> (code_verifier)
-static PENDING_FLOWS: LazyLock<Mutex<HashMap<String, String>>> =
+// Pending OIDC flows: state -> (code_verifier, created_at_unix)
+static PENDING_FLOWS: LazyLock<Mutex<HashMap<String, (String, i64)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn get_session_email(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -95,8 +98,18 @@ fn get_session_email(headers: &axum::http::HeaderMap) -> Option<String> {
             }
         })?;
 
-    let sessions = SESSIONS.lock().unwrap();
-    sessions.get(&session_id).cloned()
+    let mut sessions = SESSIONS.lock().unwrap();
+    match sessions.get(&session_id) {
+        Some((email, created)) if chrono::Utc::now().timestamp() - created < SESSION_MAX_AGE as i64 => {
+            Some(email.clone())
+        }
+        Some(_) => {
+            // Expired server-side — drop it so the session can't outlive the cookie.
+            sessions.remove(&session_id);
+            None
+        }
+        None => None,
+    }
 }
 
 pub async fn auth_middleware(request: Request, next: Next) -> Response {
@@ -116,7 +129,13 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
     let state = generate_state();
     let (verifier, challenge) = generate_pkce();
 
-    PENDING_FLOWS.lock().unwrap().insert(state.clone(), verifier);
+    {
+        let mut flows = PENDING_FLOWS.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        // Prune abandoned flows so crawlers hitting protected paths can't grow the map unboundedly.
+        flows.retain(|_, (_, created)| now - *created < PENDING_FLOW_TTL);
+        flows.insert(state.clone(), (verifier, now));
+    }
 
     let authorize_url = format!(
         "{}/authorize?client_id={}&redirect_uri={}&response_type=code&scope=openid+email&state={}&code_challenge={}&code_challenge_method=S256",
@@ -132,20 +151,37 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
 
 #[derive(Deserialize)]
 pub struct CallbackQuery {
-    pub code: String,
-    pub state: String,
+    pub code: Option<String>,
+    pub state: Option<String>,
+    pub error: Option<String>,
+    pub error_description: Option<String>,
 }
 
 pub async fn auth_callback(Query(q): Query<CallbackQuery>) -> impl IntoResponse {
+    // Handle IDP error responses
+    if let Some(error) = &q.error {
+        let desc = q.error_description.as_deref().unwrap_or("Unknown error");
+        tracing::error!(error, desc, "OIDC authorization error");
+        return (StatusCode::UNAUTHORIZED, format!("Login failed: {desc}")).into_response();
+    }
+
+    let Some(code) = &q.code else {
+        return (StatusCode::BAD_REQUEST, "Missing authorization code").into_response();
+    };
+
+    let Some(state) = &q.state else {
+        return (StatusCode::BAD_REQUEST, "Missing state parameter").into_response();
+    };
+
     let cfg = config::get();
 
     // Retrieve and remove the pending flow
     let verifier = {
         let mut flows = PENDING_FLOWS.lock().unwrap();
-        flows.remove(&q.state)
+        flows.remove(state)
     };
 
-    let Some(verifier) = verifier else {
+    let Some((verifier, _)) = verifier else {
         return (StatusCode::BAD_REQUEST, "Invalid state parameter").into_response();
     };
 
@@ -157,7 +193,7 @@ pub async fn auth_callback(Query(q): Query<CallbackQuery>) -> impl IntoResponse 
         .post(&token_url)
         .form(&[
             ("grant_type", "authorization_code"),
-            ("code", &q.code),
+            ("code", code),
             ("redirect_uri", &cfg.oidc_redirect_uri),
             ("client_id", &cfg.oidc_client_id),
             ("client_secret", &cfg.oidc_client_secret),
@@ -185,7 +221,10 @@ pub async fn auth_callback(Query(q): Query<CallbackQuery>) -> impl IntoResponse 
 
     // Create session
     let session_id = generate_session_id();
-    SESSIONS.lock().unwrap().insert(session_id.clone(), email.clone());
+    SESSIONS
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), (email.clone(), chrono::Utc::now().timestamp()));
 
     tracing::info!(email, "user authenticated via OIDC");
 
