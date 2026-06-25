@@ -64,6 +64,48 @@ main { padding: 2rem; max-width: 1200px; margin: 0 auto; }
 
 h2 { font-size: 1rem; color: var(--text-dim); margin-bottom: 1rem; text-transform: uppercase; letter-spacing: 0.05em; }
 
+.trend-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+.trend-head h2 { margin-bottom: 0; }
+.ranges { display: flex; gap: 0.3rem; }
+.ranges .range {
+  background: var(--surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.ranges .range:hover { color: var(--text); }
+.ranges .range.active { color: var(--bg); background: var(--blue); border-color: var(--blue); font-weight: 600; }
+
+.charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+.chart-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.8rem 1rem 0.6rem;
+}
+.chart-title {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.chart-card canvas { width: 100%; height: 150px; display: block; }
+.legend { display: flex; gap: 0.7rem; text-transform: none; letter-spacing: 0; }
+.legend .lg { display: inline-flex; align-items: center; gap: 0.3rem; }
+.legend .lg i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
+
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; color: var(--text-dim); font-size: 0.8rem; padding: 0.5rem; border-bottom: 1px solid var(--border); }
 td { padding: 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; font-family: monospace; }

@@ -1,6 +1,9 @@
 const $ = (s) => document.querySelector(s);
 const app = $('#app');
 
+// Selected time range for the trend charts (hours)
+let rangeHours = 24;
+
 async function api(path) {
   const res = await fetch(path);
   return res.json();
@@ -8,6 +11,10 @@ async function api(path) {
 
 function ts(epoch) {
   return new Date(epoch * 1000).toLocaleString();
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#60a5fa';
 }
 
 function severity(name, value) {
@@ -23,14 +30,14 @@ function formatValue(name, value) {
   if (name.includes('_kb')) return (value / 1024 / 1024).toFixed(1) + ' GB';
   if (name.includes('_gb')) return value.toFixed(1) + ' GB';
   if (name.includes('_pct') || name === 'cpu.usage') return value.toFixed(1) + '%';
-  if (name.includes('bytes')) return formatBytes(value);
+  if (name.includes('bytes')) return formatBytes(value) + '/s';
   if (name === 'uptime.seconds') return formatDuration(value);
   if (name.startsWith('load.')) return value.toFixed(2);
   return value.toFixed(1);
 }
 
 function formatBytes(b) {
-  if (b < 1024) return b + ' B';
+  if (b < 1024) return b.toFixed(0) + ' B';
   if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
   if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
   return (b / 1073741824).toFixed(1) + ' GB';
@@ -60,15 +67,141 @@ function metricLabel(name) {
   return name;
 }
 
-// Priority order for dashboard cards
+// ── Canvas line chart ──────────────────────────────────────────────
+// series: [{ color, points: [{ts, value}] }]
+// opts: { min, max, fmt }
+function lineChart(canvas, series, opts = {}) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth || 300;
+  const H = canvas.clientHeight || 140;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const padL = 46, padR = 12, padT = 10, padB = 22;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const allTs = [], allV = [];
+  for (const s of series) for (const p of s.points) { allTs.push(p.ts); allV.push(p.value); }
+
+  ctx.font = '10px -apple-system, sans-serif';
+  if (allV.length === 0) {
+    ctx.fillStyle = cssVar('--text-dim');
+    ctx.fillText('no data in range', padL, padT + plotH / 2);
+    return;
+  }
+
+  const minT = Math.min(...allTs), maxT = Math.max(...allTs);
+  let minV = opts.min != null ? opts.min : Math.min(...allV);
+  let maxV = opts.max != null ? opts.max : Math.max(...allV);
+  if (opts.max == null) maxV = maxV * 1.1 + 1e-9;
+  if (minV === maxV) maxV = minV + 1;
+
+  const x = (t) => padL + (maxT === minT ? plotW : ((t - minT) / (maxT - minT)) * plotW);
+  const y = (v) => padT + plotH - ((v - minV) / (maxV - minV)) * plotH;
+
+  // grid + y-axis labels
+  ctx.strokeStyle = cssVar('--border');
+  ctx.fillStyle = cssVar('--text-dim');
+  ctx.lineWidth = 1;
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const v = minV + (maxV - minV) * (i / ticks);
+    const yy = Math.round(y(v)) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, yy);
+    ctx.lineTo(W - padR, yy);
+    ctx.stroke();
+    ctx.fillText(opts.fmt ? opts.fmt(v) : v.toFixed(0), 4, yy + 3);
+  }
+
+  // x-axis time labels (start / end)
+  const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  ctx.fillText(fmtTime(minT), padL, H - 6);
+  const endLabel = fmtTime(maxT);
+  ctx.fillText(endLabel, W - padR - ctx.measureText(endLabel).width, H - 6);
+
+  // series
+  for (const s of series) {
+    if (s.points.length === 0) continue;
+    const color = s.color.startsWith('--') ? cssVar(s.color) : s.color;
+
+    // area fill under the line
+    ctx.beginPath();
+    ctx.moveTo(x(s.points[0].ts), padT + plotH);
+    for (const p of s.points) ctx.lineTo(x(p.ts), y(p.value));
+    ctx.lineTo(x(s.points[s.points.length - 1].ts), padT + plotH);
+    ctx.closePath();
+    ctx.fillStyle = color + '22';
+    ctx.fill();
+
+    // line
+    ctx.beginPath();
+    s.points.forEach((p, i) => {
+      const xx = x(p.ts), yy = y(p.value);
+      if (i === 0) ctx.moveTo(xx, yy); else ctx.lineTo(xx, yy);
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+}
+
+// ── Dashboard ──────────────────────────────────────────────────────
 const cardOrder = ['cpu.usage', 'mem.used_pct', 'load.1m', 'uptime.seconds'];
+const RANGES = [[1, '1h'], [6, '6h'], [24, '24h'], [168, '7d']];
+
+function chartSpecs(names) {
+  const specs = [
+    { title: 'CPU Usage', series: [{ name: 'cpu.usage', color: '--blue' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' },
+    { title: 'Memory', series: [{ name: 'mem.used_pct', color: '--green' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' },
+    {
+      title: 'Load Average',
+      series: [
+        { name: 'load.1m', color: '--blue' },
+        { name: 'load.5m', color: '--yellow' },
+        { name: 'load.15m', color: '--text-dim' },
+      ],
+      min: 0,
+      fmt: (v) => v.toFixed(1),
+    },
+  ];
+
+  // one chart per disk mount (used_pct)
+  for (const n of names.filter((n) => n.startsWith('disk.') && n.endsWith('.used_pct')).sort()) {
+    specs.push({ title: metricLabel(n), series: [{ name: n, color: '--yellow' }], min: 0, max: 100, fmt: (v) => v.toFixed(0) + '%' });
+  }
+
+  // one chart per network interface (rx + tx overlaid)
+  const ifaces = [...new Set(names.filter((n) => n.startsWith('net.')).map((n) => n.split('.')[1]))].sort();
+  for (const iface of ifaces) {
+    specs.push({
+      title: `Network ${iface}`,
+      series: [
+        { name: `net.${iface}.rx_bytes`, color: '--green', label: 'RX' },
+        { name: `net.${iface}.tx_bytes`, color: '--blue', label: 'TX' },
+      ],
+      min: 0,
+      fmt: (v) => formatBytes(v),
+    });
+  }
+
+  return specs;
+}
 
 async function renderDashboard() {
-  const data = await api('/api/status');
-  const alerts = await api('/api/alerts?hours=24');
+  const [status, alertData] = await Promise.all([api('/api/status'), api('/api/alerts?hours=24')]);
+  const metrics = status.metrics || [];
 
-  const metrics = data.metrics || [];
-  // Sort: priority cards first, then alphabetical
+  if (metrics.length === 0) {
+    app.innerHTML = '<div class="empty">No metrics yet. Waiting for first collection cycle...</div>';
+    return;
+  }
+
   const sorted = [...metrics].sort((a, b) => {
     const ai = cardOrder.indexOf(a.name);
     const bi = cardOrder.indexOf(b.name);
@@ -86,8 +219,23 @@ async function renderDashboard() {
   }
   html += '</div>';
 
-  // Active alerts
-  const active = (alerts.alerts || []).filter(a => !a.resolved_at);
+  // range selector + chart grid
+  const names = metrics.map((m) => m.name);
+  const specs = chartSpecs(names);
+
+  html += '<div class="trend-head"><h2>Trends</h2><div class="ranges">';
+  for (const [h, label] of RANGES) {
+    html += `<button class="range${h === rangeHours ? ' active' : ''}" data-hours="${h}">${label}</button>`;
+  }
+  html += '</div></div><div class="charts">';
+  specs.forEach((spec, i) => {
+    const legend = spec.series.filter((s) => s.label).map((s) => `<span class="lg"><i style="background:${cssVar(s.color)}"></i>${s.label}</span>`).join('');
+    html += `<div class="chart-card"><div class="chart-title">${spec.title}${legend ? `<span class="legend">${legend}</span>` : ''}</div><canvas id="chart-${i}"></canvas></div>`;
+  });
+  html += '</div>';
+
+  // active alerts
+  const active = (alertData.alerts || []).filter((a) => !a.resolved_at);
   if (active.length > 0) {
     html += '<h2>Active Alerts</h2><table><tr><th>Rule</th><th>Metric</th><th>Value</th><th>Since</th></tr>';
     for (const a of active) {
@@ -96,11 +244,32 @@ async function renderDashboard() {
     html += '</table>';
   }
 
-  if (metrics.length === 0) {
-    html = '<div class="empty">No metrics yet. Waiting for first collection cycle...</div>';
-  }
-
   app.innerHTML = html;
+
+  // wire range buttons
+  app.querySelectorAll('button.range').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      rangeHours = Number(btn.dataset.hours);
+      renderDashboard();
+    });
+  });
+
+  // fetch series data and draw (unique metric names only)
+  const wanted = [...new Set(specs.flatMap((s) => s.series.map((x) => x.name)))];
+  const seriesData = {};
+  await Promise.all(
+    wanted.map(async (name) => {
+      const d = await api(`/api/metrics?name=${encodeURIComponent(name)}&hours=${rangeHours}`);
+      seriesData[name] = (d.metrics || []).map((m) => ({ ts: m.ts, value: m.value }));
+    })
+  );
+
+  specs.forEach((spec, i) => {
+    const canvas = document.getElementById(`chart-${i}`);
+    if (!canvas) return;
+    const series = spec.series.map((s) => ({ color: s.color, points: seriesData[s.name] || [] }));
+    lineChart(canvas, series, { min: spec.min, max: spec.max, fmt: spec.fmt });
+  });
 }
 
 async function renderLogs() {
@@ -150,7 +319,7 @@ function escapeHtml(s) {
 
 function route() {
   const hash = location.hash || '#/';
-  document.querySelectorAll('nav a').forEach(a => {
+  document.querySelectorAll('nav a').forEach((a) => {
     a.classList.toggle('active', a.getAttribute('href') === hash);
   });
 
@@ -160,6 +329,14 @@ function route() {
 }
 
 window.addEventListener('hashchange', route);
+// redraw charts on resize when on the dashboard
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (!(location.hash || '#/').startsWith('#/logs') && !(location.hash || '#/').startsWith('#/alerts')) renderDashboard();
+  }, 200);
+});
 route();
 
 // Auto-refresh every 60s
