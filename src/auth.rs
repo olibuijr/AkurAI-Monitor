@@ -115,8 +115,14 @@ fn get_session_email(headers: &axum::http::HeaderMap) -> Option<String> {
 pub async fn auth_middleware(request: Request, next: Next) -> Response {
     let path = request.uri().path().to_string();
 
-    // Allow health, log ingestion (token-authed in the handler), and auth routes
-    if path == "/api/health" || path == "/api/ingest" || path.starts_with("/auth/") {
+    // Allow health, log ingestion (token-authed in the handler), auth routes,
+    // and browser icon assets (requested before the session exists).
+    if path == "/api/health"
+        || path == "/api/ingest"
+        || path.starts_with("/auth/")
+        || path == "/favicon.svg"
+        || path == "/apple-touch-icon.png"
+    {
         return next.run(request).await;
     }
 

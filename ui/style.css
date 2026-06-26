@@ -35,10 +35,22 @@ header {
   background: var(--surface);
 }
 
-.brand { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; }
-.brand-logo { width: 30px; height: 30px; display: block; }
-.brand span { font-size: 1.15rem; font-weight: 600; color: var(--text); letter-spacing: 0.01em; }
-.brand span b { color: var(--lime); font-weight: 800; }
+.brand { display: inline-flex; align-items: center; gap: 10px; min-width: 0; color: var(--fg, var(--text)); font-weight: 800; letter-spacing: -0.02em; text-decoration: none; }
+.brand-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(150deg, var(--accent), var(--accent-2));
+  color: var(--on-accent, #fff);
+  font-size: 15px;
+  font-weight: 800;
+}
+.brand-mark svg { width: 18px; height: 18px; display: block; }
+.brand span { font-size: 1.15rem; font-weight: 600; color: var(--fg, var(--text)); letter-spacing: 0.01em; }
+.brand span b { color: var(--accent, var(--lime)); font-weight: 800; }
 
 nav {
   display: flex;
