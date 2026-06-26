@@ -1,16 +1,22 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* ── AkurAI theme token aliases ─────────────────────────────────────────────
+   The framework's themes.css supplies the canonical tokens (--bg, --panel,
+   --fg, --muted, --ok, --warn, --danger, --info, --accent, --border …).
+   Here we alias the app-local names so the rest of this file stays unchanged,
+   but re-themes correctly when any named theme is active.
+   Fallback values are the original dark defaults in case themes.css is slow.
+   ─────────────────────────────────────────────────────────────────────────── */
 :root {
-  --bg: #0f1117;
-  --surface: #1a1d27;
-  --border: #2a2d3a;
-  --text: #e0e0e0;
-  --text-dim: #888;
-  --green: #4ade80;
-  --red: #f87171;
-  --yellow: #fbbf24;
-  --blue: #60a5fa;
-  --lime: #c8f05a;
+  --surface:  var(--panel,    #1a1d27);
+  --text:     var(--fg,       #e0e0e0);
+  --text-dim: var(--muted,    #888);
+  --green:    var(--ok,       #4ade80);
+  --red:      var(--danger,   #f87171);
+  --yellow:   var(--warn,     #fbbf24);
+  --blue:     var(--info,     #60a5fa);
+  --lime:     var(--accent,   #c8f05a);
+  /* --bg and --border are direct framework token names — no alias needed */
 }
 
 body {
@@ -33,6 +39,13 @@ header {
 .brand-logo { width: 30px; height: 30px; display: block; }
 .brand span { font-size: 1.15rem; font-weight: 600; color: var(--text); letter-spacing: 0.01em; }
 .brand span b { color: var(--lime); font-weight: 800; }
+
+nav {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
 
 nav a {
   color: var(--text-dim);
@@ -113,14 +126,20 @@ h2 { font-size: 1rem; color: var(--text-dim); margin-bottom: 1rem; text-transfor
   text-transform: uppercase;
   letter-spacing: 0.03em;
   margin-bottom: 0.4rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 .chart-card canvas { width: 100%; height: 150px; display: block; }
-.legend { display: flex; gap: 0.7rem; text-transform: none; letter-spacing: 0; }
-.legend .lg { display: inline-flex; align-items: center; gap: 0.3rem; }
-.legend .lg i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.7rem;
+  margin-bottom: 0.5rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+.legend .lg { display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+.legend .lg i { width: 12px; height: 3px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
 
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; color: var(--text-dim); font-size: 0.8rem; padding: 0.5rem; border-bottom: 1px solid var(--border); }
@@ -174,11 +193,11 @@ table.logtable td.s { color: var(--blue); vertical-align: top; overflow: hidden;
 table.logtable td.line { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; vertical-align: top; }
 
 /* level severity tint + badges */
-table.logtable tr.lvl-error { background: rgba(248, 113, 113, 0.07); }
-table.logtable tr.lvl-warn { background: rgba(251, 191, 36, 0.05); }
+table.logtable tr.lvl-error { background: color-mix(in srgb, var(--red) 8%, transparent); }
+table.logtable tr.lvl-warn { background: color-mix(in srgb, var(--yellow) 6%, transparent); }
 .badge { display: inline-block; font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 0.05rem 0.35rem; border-radius: 3px; }
-.badge.error { background: var(--red); color: #1a0606; }
-.badge.warn { background: var(--yellow); color: #241c00; }
+.badge.error { background: var(--red); color: var(--bg); }
+.badge.warn { background: var(--yellow); color: var(--bg); }
 .badge.info { background: var(--border); color: var(--text); }
 .badge.debug { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
 .cat { display: inline-block; font-size: 0.62rem; color: var(--text-dim); border: 1px solid var(--border); border-radius: 3px; padding: 0 0.3rem; margin-right: 0.5rem; text-transform: uppercase; letter-spacing: 0.03em; }
@@ -197,3 +216,29 @@ table.logtable tr.lvl-warn { background: rgba(251, 191, 36, 0.05); }
 .refresh { color: var(--text-dim); font-size: 0.75rem; text-align: right; margin-bottom: 1rem; display: flex; align-items: center; justify-content: flex-end; gap: 0.4rem; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); display: inline-block; }
 .live-dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+/* ── Theme picker — token-driven so it re-themes with everything else ──── */
+.theme-picker { display: inline-flex; align-items: center; margin-left: 0.5rem; }
+.theme-select {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg, var(--text));
+  background: var(--panel, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 28px 6px 11px;
+  cursor: pointer;
+  line-height: 1.2;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted, #888) 50%), linear-gradient(135deg, var(--muted, #888) 50%, transparent 50%);
+  background-position: calc(100% - 15px) center, calc(100% - 10px) center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.theme-select:hover { border-color: var(--border-2, var(--text-dim)); }
+.theme-select:focus-visible { outline: 2px solid var(--accent, var(--lime)); outline-offset: 1px; }
+.theme-select optgroup { color: var(--fg, var(--text)); background: var(--panel, var(--surface)); font-weight: 700; }
+.theme-select option { color: var(--fg, var(--text)); background: var(--panel, var(--surface)); font-weight: 500; }

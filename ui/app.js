@@ -381,7 +381,7 @@ async function renderDashboard(seedMetrics) {
   html += '</div></div>';
   const chartCard = (spec, i) => {
     const legend = spec.series.filter((s) => s.label).map((s) => `<span class="lg"><i style="background:${cssVar(s.color)}"></i>${s.label}</span>`).join('');
-    return `<div class="chart-card"><div class="chart-title">${spec.title}${legend ? `<span class="legend">${legend}</span>` : ''}</div><canvas id="chart-${i}"></canvas></div>`;
+    return `<div class="chart-card"><div class="chart-title">${spec.title}</div>${legend ? `<div class="legend">${legend}</div>` : ''}<canvas id="chart-${i}"></canvas></div>`;
   };
   for (const cat of orderedCategories(currentSpecs)) {
     html += `<h3 class="chart-group">${cat}</h3><div class="charts">`;
