@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Deploy rules of conduct:
+# - Read AGENTS.md and canonical Notes/docs before changing or deploying.
+# - Never print, commit, or copy secrets; use passvault/env files only.
+# - Preserve env files, service users, user data, and databases; snapshot state before risky swaps.
+# - Verify ports, DNS, TLS, and systemd unit names before changing routes or services.
+# - Use managed services only (systemd/pm2); no nohup, background shells, or ad hoc daemons.
+# - Run gates and health checks; if deploy fails, stop and roll back rather than improvising.
+# - Keep deploy behavior unchanged unless the task explicitly asks for deploy logic changes.
 set -euo pipefail
 
 SSH_HOST="${MONITOR_SSH:-akurai-mail}"
