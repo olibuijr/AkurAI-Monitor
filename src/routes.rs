@@ -8,7 +8,7 @@ use serde_json::json;
 use crate::{config, db, stream};
 
 pub async fn health() -> impl IntoResponse {
-    Json(json!({"status": "ok"}))
+    Json(json!({"app": "akurai-monitor", "status": "ok", "version": env!("CARGO_PKG_VERSION")}))
 }
 
 #[derive(Serialize)]

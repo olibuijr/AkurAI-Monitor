@@ -1,0 +1,18 @@
+name = "rust-monitor"
+domain = "monitor.olibuijr.com"
+port = 8800
+repo = "olibuijr/AkurAI-Monitor"
+build = "cargo build --release --target x86_64-unknown-linux-musl"
+artifact = "target/x86_64-unknown-linux-musl/release/rust-monitor"
+appdir = "ui"
+version_file = "VERSION"
+cargo_version = "package"
+changelog = "CHANGELOG.md"
+changelog_mode = "hybrid"
+gate_fmt = true
+gate_clippy = true
+gate_test = true
+
+[service]
+env_file = "/etc/rust-monitor.env"
+data_dir = ["/var/lib/rust-monitor", "/var/log/rust-monitor"]
