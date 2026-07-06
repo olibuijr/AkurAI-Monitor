@@ -1,0 +1,29 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "publish (ship current HEAD) or release (bump+tag)"
+        type: choice
+        options: [publish, release]
+        default: publish
+      bump:
+        description: "patch|minor|major — only used when mode=release"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      deploy_args:
+        description: "advanced: exact ./deploy.sh args, overrides mode/bump"
+        type: string
+        default: ""
+
+jobs:
+  deploy:
+    uses: olibuijr/AkurAI-EC2/.github/workflows/deploy.yml@main
+    with:
+      mode: ${{ inputs.mode || 'publish' }}
+      bump: ${{ inputs.bump || 'patch' }}
+      deploy_args: ${{ inputs.deploy_args || '' }}
