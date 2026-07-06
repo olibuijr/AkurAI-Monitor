@@ -22,7 +22,7 @@ on:
 
 jobs:
   deploy:
-    uses: olibuijr/akurai-ec2/.github/workflows/deploy.yml@main
+    uses: olibuijr/AkurAI-EC2/.github/workflows/deploy.yml@main
     with:
       mode: ${{ inputs.mode || 'publish' }}
       bump: ${{ inputs.bump || 'patch' }}
