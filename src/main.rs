@@ -5,17 +5,18 @@ mod config;
 mod db;
 mod dns_metrics;
 mod journald;
+mod management;
 mod routes;
 mod schema;
 mod stream;
 mod tailer;
 
 use axum::{
-    http::{header, HeaderValue},
+    Router,
+    http::{HeaderValue, header},
     middleware,
     response::Response,
     routing::{get, post},
-    Router,
 };
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -55,7 +56,7 @@ async fn main() {
     // subscribers, but only persists to the DB on the configured interval
     // (keeping history — and chart queries — at the intended resolution).
     let interval = cfg.interval_secs;
-    let live_secs = interval.min(5).max(1);
+    let live_secs = interval.clamp(1, 5);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(live_secs));
         let mut last_persist: i64 = 0;
@@ -91,7 +92,8 @@ async fn main() {
                     let tx = conn.unchecked_transaction().ok();
                     for m in &metrics {
                         conn.execute(
-                            "INSERT INTO metrics (name, value, ts) VALUES (?1, ?2, ?3)",
+                            "INSERT INTO metrics (host_id, name, value, ts)
+                             VALUES ((SELECT id FROM hosts WHERE name = 'local'), ?1, ?2, ?3)",
                             rusqlite::params![m.name, m.value, now],
                         )
                         .ok();
@@ -124,7 +126,8 @@ async fn main() {
                 let tx = conn.unchecked_transaction().ok();
                 for (source, line) in &entries {
                     conn.execute(
-                        "INSERT INTO logs (source, line, ts) VALUES (?1, ?2, ?3)",
+                        "INSERT INTO logs (host_id, source, line, ts)
+                         VALUES ((SELECT id FROM hosts WHERE name = 'local'), ?1, ?2, ?3)",
                         rusqlite::params![source, line, now],
                     )
                     .ok();
@@ -150,7 +153,7 @@ async fn main() {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             ticker.tick().await;
-            alert::evaluate_alerts(&alert_log);
+            alert::evaluate_alerts(&alert_log).await;
         }
     });
 
@@ -167,10 +170,16 @@ async fn main() {
 
             db::with_db(|conn| {
                 let m = conn
-                    .execute("DELETE FROM metrics WHERE ts < ?1", rusqlite::params![metric_cutoff])
+                    .execute(
+                        "DELETE FROM metrics WHERE ts < ?1",
+                        rusqlite::params![metric_cutoff],
+                    )
                     .unwrap_or(0);
                 let l = conn
-                    .execute("DELETE FROM logs WHERE ts < ?1", rusqlite::params![log_cutoff])
+                    .execute(
+                        "DELETE FROM logs WHERE ts < ?1",
+                        rusqlite::params![log_cutoff],
+                    )
                     .unwrap_or(0);
                 if m > 0 || l > 0 {
                     tracing::info!(metrics_deleted = m, logs_deleted = l, "retention cleanup");
@@ -193,13 +202,29 @@ async fn main() {
         .route("/api/alerts", get(routes::alerts))
         .route("/api/stream", get(stream::sse_handler))
         .route("/api/ingest", post(routes::ingest))
+        .route(
+            "/api/manage/{resource}",
+            get(management::list).post(management::create),
+        )
+        .route(
+            "/api/manage/{resource}/{id}",
+            get(management::get)
+                .put(management::update)
+                .delete(management::delete),
+        )
+        .route(
+            "/api/manage/channels/{id}/test",
+            post(management::test_channel),
+        )
         .route("/auth/callback", get(auth::auth_callback))
         .route("/auth/logout", get(auth::auth_logout))
         .fallback_service(static_service)
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(middleware::map_response(add_no_cache));
 
-    let listener = tokio::net::TcpListener::bind(&cfg.listen_addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&cfg.listen_addr)
+        .await
+        .unwrap();
     tracing::info!("listening on {}", cfg.listen_addr);
     axum::serve(listener, app).await.unwrap();
 }

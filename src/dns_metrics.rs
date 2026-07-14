@@ -60,10 +60,10 @@ pub fn observe(line: &str) {
     if let Some(t) = field_u16(line, "qtype") {
         *a.qtype.entry(t).or_insert(0) += 1;
     }
-    if let Some(e) = field_u32(line, "elapsed_us") {
-        if a.lat_us.len() < LAT_CAP {
-            a.lat_us.push(e);
-        }
+    if let Some(e) = field_u32(line, "elapsed_us")
+        && a.lat_us.len() < LAT_CAP
+    {
+        a.lat_us.push(e);
     }
 }
 
@@ -95,14 +95,20 @@ fn build_metrics(a: Agg, interval_secs: u64) -> Vec<Metric> {
 
     // Response codes — fixed buckets so the chart series are stable.
     let rc = |code: u16| *a.rcode.get(&code).unwrap_or(&0) as f64;
-    let rc_known: u64 = [0u16, 1, 2, 3, 5].iter().map(|c| a.rcode.get(c).copied().unwrap_or(0)).sum();
+    let rc_known: u64 = [0u16, 1, 2, 3, 5]
+        .iter()
+        .map(|c| a.rcode.get(c).copied().unwrap_or(0))
+        .sum();
     let rc_total: u64 = a.rcode.values().sum();
     out.push(m("dns.rcode.noerror", rc(0)));
     out.push(m("dns.rcode.formerr", rc(1)));
     out.push(m("dns.rcode.servfail", rc(2)));
     out.push(m("dns.rcode.nxdomain", rc(3)));
     out.push(m("dns.rcode.refused", rc(5)));
-    out.push(m("dns.rcode.other", rc_total.saturating_sub(rc_known) as f64));
+    out.push(m(
+        "dns.rcode.other",
+        rc_total.saturating_sub(rc_known) as f64,
+    ));
 
     // Query types — common buckets + catch-all.
     let qt = |t: u16| *a.qtype.get(&t).unwrap_or(&0) as f64;
@@ -121,7 +127,10 @@ fn build_metrics(a: Agg, interval_secs: u64) -> Vec<Metric> {
     out.push(m("dns.qtype.cname", qt(5)));
     out.push(m("dns.qtype.srv", qt(33)));
     out.push(m("dns.qtype.caa", qt(257)));
-    out.push(m("dns.qtype.other", qt_total.saturating_sub(qt_known) as f64));
+    out.push(m(
+        "dns.qtype.other",
+        qt_total.saturating_sub(qt_known) as f64,
+    ));
 
     // Latency (microseconds).
     let (avg, p95, max) = latency_stats(&a.lat_us);
@@ -179,9 +188,7 @@ fn field_str<'a>(line: &'a str, key: &str) -> Option<&'a str> {
         if before_ok {
             let vstart = at + pat.len();
             let rest = &line[vstart..];
-            let end = rest
-                .find(|c: char| c.is_whitespace())
-                .unwrap_or(rest.len());
+            let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
             return Some(&rest[..end]);
         }
         from = at + pat.len();
@@ -217,7 +224,11 @@ mod tests {
             (true, 28, 3, 300),
             (false, 12, 5, 50),
         ] {
-            if proto_tcp { a.tcp += 1 } else { a.udp += 1 }
+            if proto_tcp {
+                a.tcp += 1
+            } else {
+                a.udp += 1
+            }
             *a.qtype.entry(qtype).or_insert(0) += 1;
             *a.rcode.entry(rcode).or_insert(0) += 1;
             a.lat_us.push(lat);
@@ -237,7 +248,9 @@ mod tests {
     #[test]
     fn ignores_non_query_lines() {
         let before = { agg().lock().unwrap().udp };
-        observe("2026-06-25T16:16:29Z  INFO akurai_dns::server: UDP server listening addr=0.0.0.0:53");
+        observe(
+            "2026-06-25T16:16:29Z  INFO akurai_dns::server: UDP server listening addr=0.0.0.0:53",
+        );
         let after = { agg().lock().unwrap().udp };
         assert_eq!(before, after);
     }
