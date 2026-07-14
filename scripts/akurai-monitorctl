@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Manage AkurAI Monitor through its authenticated HTTP API."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+RESOURCES = {"hosts", "metrics", "applications", "logs", "alerts", "recipients", "channels"}
+ENV_FILE = Path("/etc/rust-monitor.env")
+REMOTE_CLI = "/usr/local/bin/akurai-monitorctl"
+EC2_CLI = Path.home() / ".local/bin/akurai-ec2"
+
+
+def usage() -> None:
+    print(
+        """Usage: akurai-monitorctl COMMAND
+
+Commands:
+  health                              Public service health
+  status                              Latest metric values
+  events                              Recent alert events
+  RESOURCE list [--limit N]           List records
+  RESOURCE get ID                     Get one record
+  RESOURCE create FIELD=VALUE...      Create a record
+  RESOURCE update ID FIELD=VALUE...   Update a record
+  RESOURCE delete ID --yes            Delete a record
+  channels test ID                    Send a test alert through one channel
+
+Resources:
+  hosts metrics applications logs alerts recipients channels
+
+Values accept JSON scalars. Examples:
+  hosts create name=tv address=100.88.0.8 kind=linux
+  applications create host_id=2 name=tv-frame service_name=tv-frame.service
+  alerts create name='High load' metric_name=load.5m operator=gt threshold=4 duration_secs=300
+  channels create name=pi-bun kind=pi-bun endpoint=http://100.88.0.9:4173 token_env=MONITOR_CHANNEL_TOKEN_PI_BUN
+  recipients create channel_id=1 name=operator target=SESSION_ID
+  channels test 1
+
+Secrets are referenced by environment-variable name; never pass secret values as fields.
+"""
+    )
+
+
+def on_monitor_host() -> bool:
+    return ENV_FILE.exists() or bool(os.environ.get("AKURAI_MONITOR_URL"))
+
+
+def run_remote(argv: list[str]) -> int:
+    cli = str(EC2_CLI if EC2_CLI.exists() else "akurai-ec2")
+    command = shlex.join([REMOTE_CLI, *argv])
+    return subprocess.run([cli, "ssh", command], check=False).returncode
+
+
+def become_root(argv: list[str]) -> None:
+    if ENV_FILE.exists() and not os.access(ENV_FILE, os.R_OK) and os.geteuid() != 0:
+        os.execvp("sudo", ["sudo", "-n", sys.executable, str(Path(__file__).resolve()), *argv])
+
+
+def read_env_file() -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not ENV_FILE.exists():
+        return values
+    for raw_line in ENV_FILE.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.removeprefix("export ").strip()
+        if key != "MONITOR_API_TOKEN":
+            continue
+        parsed = shlex.split(value, comments=False, posix=True)
+        values[key] = parsed[0] if parsed else ""
+    return values
+
+
+def token() -> str:
+    direct = os.environ.get("AKURAI_MONITOR_TOKEN")
+    if direct:
+        return direct
+    values = read_env_file()
+    return values.get("MONITOR_API_TOKEN", "")
+
+
+def request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+    base = os.environ.get("AKURAI_MONITOR_URL", "http://127.0.0.1:8800").rstrip("/")
+    payload = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+    headers = {"Accept": "application/json"}
+    api_token = token()
+    if path != "/api/health" and not api_token:
+        raise SystemExit("akurai-monitorctl: MONITOR_API_TOKEN is unavailable")
+    if api_token:
+        headers["Authorization"] = f"Bearer {api_token}"
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    req = Request(f"{base}{path}", data=payload, headers=headers, method=method)
+    try:
+        with urlopen(req, timeout=30) as response:
+            content = response.read()
+    except HTTPError as error:
+        content = error.read()
+        message = content.decode(errors="replace") or error.reason
+        raise SystemExit(f"akurai-monitorctl: HTTP {error.code}: {message}") from None
+    except URLError as error:
+        raise SystemExit(f"akurai-monitorctl: request failed: {error.reason}") from None
+    return json.loads(content) if content else {}
+
+
+def scalar(value: str) -> Any:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    if isinstance(parsed, (dict, list)):
+        raise SystemExit("akurai-monitorctl: field values must be JSON scalars")
+    return parsed
+
+
+def fields(arguments: list[str]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for argument in arguments:
+        if "=" not in argument:
+            raise SystemExit(f"akurai-monitorctl: expected FIELD=VALUE, got {argument!r}")
+        key, value = argument.split("=", 1)
+        if not key:
+            raise SystemExit("akurai-monitorctl: field name cannot be empty")
+        result[key] = scalar(value)
+    return result
+
+
+def positive_id(value: str) -> int:
+    try:
+        record_id = int(value)
+    except ValueError:
+        raise SystemExit("akurai-monitorctl: ID must be an integer") from None
+    if record_id < 1:
+        raise SystemExit("akurai-monitorctl: ID must be positive")
+    return record_id
+
+
+def resource_command(resource: str, arguments: list[str]) -> Any:
+    if not arguments:
+        raise SystemExit(f"akurai-monitorctl: {resource} requires an action")
+    action, *rest = arguments
+    base = f"/api/manage/{resource}"
+    if action == "list":
+        if not rest:
+            return request("GET", base)
+        if len(rest) == 2 and rest[0] == "--limit" and rest[1].isdigit():
+            return request("GET", f"{base}?limit={int(rest[1])}")
+        raise SystemExit("akurai-monitorctl: list accepts only --limit N")
+    if action == "get" and len(rest) == 1:
+        return request("GET", f"{base}/{positive_id(rest[0])}")
+    if action == "create" and rest:
+        return request("POST", base, fields(rest))
+    if action == "update" and len(rest) >= 2:
+        return request("PUT", f"{base}/{positive_id(rest[0])}", fields(rest[1:]))
+    if action == "delete" and len(rest) == 2 and rest[1] == "--yes":
+        return request("DELETE", f"{base}/{positive_id(rest[0])}")
+    if resource == "channels" and action == "test" and len(rest) == 1:
+        return request("POST", f"{base}/{positive_id(rest[0])}/test", {})
+    raise SystemExit(f"akurai-monitorctl: invalid {resource} command; run --help")
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in {"help", "-h", "--help"}:
+        usage()
+        return 0
+    if not on_monitor_host():
+        return run_remote(argv)
+    become_root(argv)
+
+    command, *arguments = argv
+    if command == "health" and not arguments:
+        result = request("GET", "/api/health")
+    elif command == "status" and not arguments:
+        result = request("GET", "/api/status")
+    elif command == "events" and not arguments:
+        result = request("GET", "/api/alerts")
+    elif command in RESOURCES:
+        result = resource_command(command, arguments)
+    else:
+        raise SystemExit(f"akurai-monitorctl: unknown command {command!r}; run --help")
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

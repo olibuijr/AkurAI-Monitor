@@ -326,7 +326,7 @@ async function refreshAlerts() {
   if (active.length === 0) { el.innerHTML = ''; return; }
   let html = '<h2>Active Alerts</h2><table><tr><th>Rule</th><th>Metric</th><th>Value</th><th>Since</th></tr>';
   for (const a of active) {
-    html += `<tr class="alert-active"><td>${a.rule_name}</td><td>${a.metric_name}</td><td>${a.value.toFixed(1)}</td><td>${ts(a.triggered_at)}</td></tr>`;
+    html += `<tr class="alert-active"><td>${escapeHtml(a.rule_name)}</td><td>${escapeHtml(a.metric_name)}</td><td>${a.value.toFixed(1)}</td><td>${ts(a.triggered_at)}</td></tr>`;
   }
   html += '</table>';
   el.innerHTML = html;
@@ -370,7 +370,7 @@ async function renderDashboard(seedMetrics) {
   html += '<h2>Current Status</h2><div class="grid">';
   for (const m of sorted) {
     const sev = severity(m.name, m.value);
-    html += `<div class="card"><div class="label">${metricLabel(m.name)}</div><div class="value ${sev}" data-badge="${m.name}">${formatValue(m.name, m.value)}</div></div>`;
+    html += `<div class="card"><div class="label">${escapeHtml(metricLabel(m.name))}</div><div class="value ${sev}" data-badge="${escapeHtml(m.name)}">${formatValue(m.name, m.value)}</div></div>`;
   }
   html += '</div>';
 
@@ -381,7 +381,7 @@ async function renderDashboard(seedMetrics) {
   html += '</div></div>';
   const chartCard = (spec, i) => {
     const legend = spec.series.filter((s) => s.label).map((s) => `<span class="lg"><i style="background:${cssVar(s.color)}"></i>${s.label}</span>`).join('');
-    return `<div class="chart-card"><div class="chart-title">${spec.title}</div>${legend ? `<div class="legend">${legend}</div>` : ''}<canvas id="chart-${i}"></canvas></div>`;
+    return `<div class="chart-card"><div class="chart-title">${escapeHtml(spec.title)}</div>${legend ? `<div class="legend">${legend}</div>` : ''}<canvas id="chart-${i}"></canvas></div>`;
   };
   for (const cat of orderedCategories(currentSpecs)) {
     html += `<h3 class="chart-group">${cat}</h3><div class="charts">`;
@@ -491,7 +491,7 @@ function renderLogRows() {
   tbody.innerHTML = rows
     .map(
       (l) =>
-        `<tr class="lvl-${l.level}"><td class="t">${ts(l.ts)}</td><td class="lv"><span class="badge ${l.level}">${l.level}</span></td><td class="s">${srcName(l.source)}</td><td class="line"><span class="cat">${l.category}</span>${escapeHtml(l.line)}</td></tr>`
+        `<tr class="lvl-${l.level}"><td class="t">${ts(l.ts)}</td><td class="lv"><span class="badge ${l.level}">${l.level}</span></td><td class="s">${escapeHtml(srcName(l.source))}</td><td class="line"><span class="cat">${escapeHtml(l.category)}</span>${escapeHtml(l.line)}</td></tr>`
     )
     .join('');
 }
@@ -526,7 +526,7 @@ function renderLogsLayout() {
     sidebar += '<div class="fgroup"><label>Category</label><div class="sources">';
     for (const c of cats) {
       const checked = logExcludedCats.has(c) ? '' : 'checked';
-      sidebar += `<label class="src"><input type="checkbox" data-cat="${escapeHtml(c)}" ${checked}><span>${c}</span><em>${catCounts[c] || 0}</em></label>`;
+      sidebar += `<label class="src"><input type="checkbox" data-cat="${escapeHtml(c)}" ${checked}><span>${escapeHtml(c)}</span><em>${catCounts[c] || 0}</em></label>`;
     }
     sidebar += '</div></div>';
   }
@@ -536,7 +536,7 @@ function renderLogsLayout() {
   } else {
     for (const s of sources) {
       const checked = logExcluded.has(s) ? '' : 'checked';
-      sidebar += `<label class="src"><input type="checkbox" data-source="${escapeHtml(s)}" ${checked}><span>${srcName(s)}</span><em>${counts[s] || 0}</em></label>`;
+      sidebar += `<label class="src"><input type="checkbox" data-source="${escapeHtml(s)}" ${checked}><span>${escapeHtml(srcName(s))}</span><em>${counts[s] || 0}</em></label>`;
     }
   }
   sidebar += '</div></div></aside>';
@@ -618,7 +618,7 @@ async function renderAlerts() {
     for (const a of alerts) {
       const cls = a.resolved_at ? 'alert-resolved' : 'alert-active';
       const status = a.resolved_at ? 'Resolved' : 'Active';
-      html += `<tr class="${cls}"><td>${status}</td><td>${a.rule_name}</td><td>${a.metric_name}</td><td>${a.value.toFixed(1)}</td><td>${ts(a.triggered_at)}</td><td>${a.resolved_at ? ts(a.resolved_at) : '-'}</td></tr>`;
+      html += `<tr class="${cls}"><td>${status}</td><td>${escapeHtml(a.rule_name)}</td><td>${escapeHtml(a.metric_name)}</td><td>${a.value.toFixed(1)}</td><td>${ts(a.triggered_at)}</td><td>${a.resolved_at ? ts(a.resolved_at) : '-'}</td></tr>`;
     }
     html += '</table>';
   }
@@ -626,10 +626,14 @@ async function renderAlerts() {
   app.innerHTML = html;
 }
 
-function escapeHtml(s) {
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character]);
 }
 
 // ── Live connection (SSE with polling fallback) ────────────────────

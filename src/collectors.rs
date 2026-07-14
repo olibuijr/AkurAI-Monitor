@@ -135,7 +135,11 @@ fn collect_disk() -> Vec<Metric> {
             let used_pct = (used as f64 / total as f64) * 100.0;
 
             let mount_label = mount.replace('/', ".");
-            let mount_label = if mount_label == "." { ".root".to_string() } else { mount_label };
+            let mount_label = if mount_label == "." {
+                ".root".to_string()
+            } else {
+                mount_label
+            };
 
             metrics.push(Metric {
                 name: format!("disk{mount_label}.used_pct"),
@@ -167,13 +171,22 @@ fn collect_load() -> Vec<Metric> {
 
     let mut metrics = Vec::new();
     if let Ok(v) = parts[0].parse::<f64>() {
-        metrics.push(Metric { name: "load.1m".to_string(), value: v });
+        metrics.push(Metric {
+            name: "load.1m".to_string(),
+            value: v,
+        });
     }
     if let Ok(v) = parts[1].parse::<f64>() {
-        metrics.push(Metric { name: "load.5m".to_string(), value: v });
+        metrics.push(Metric {
+            name: "load.5m".to_string(),
+            value: v,
+        });
     }
     if let Ok(v) = parts[2].parse::<f64>() {
-        metrics.push(Metric { name: "load.15m".to_string(), value: v });
+        metrics.push(Metric {
+            name: "load.15m".to_string(),
+            value: v,
+        });
     }
 
     metrics
@@ -206,7 +219,10 @@ fn collect_network() -> Vec<Metric> {
             if iface == "lo" {
                 continue;
             }
-            let vals: Vec<u64> = rest.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            let vals: Vec<u64> = rest
+                .split_whitespace()
+                .filter_map(|s| s.parse().ok())
+                .collect();
             if vals.len() >= 9 {
                 map.insert(iface.to_string(), (vals[0], vals[8])); // rx_bytes, tx_bytes
             }

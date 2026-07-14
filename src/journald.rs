@@ -63,7 +63,7 @@ async fn follow(units: &[String]) -> std::io::Result<()> {
             }
             _ = flush.tick() => {
                 if !buf.is_empty() {
-                    persist_and_broadcast(buf.drain(..).collect());
+                    persist_and_broadcast(std::mem::take(&mut buf));
                 }
             }
         }
@@ -85,7 +85,10 @@ fn parse_line(raw: &str) -> Option<(String, String, i64)> {
     let message = match v.get("MESSAGE")? {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Array(arr) => {
-            let bytes: Vec<u8> = arr.iter().filter_map(|n| n.as_u64().map(|b| b as u8)).collect();
+            let bytes: Vec<u8> = arr
+                .iter()
+                .filter_map(|n| n.as_u64().map(|b| b as u8))
+                .collect();
             String::from_utf8_lossy(&bytes).into_owned()
         }
         _ => return None,
@@ -121,7 +124,7 @@ fn strip_ansi(s: &str) -> String {
         if c == '\u{1b}' {
             if chars.peek() == Some(&'[') {
                 chars.next();
-                while let Some(n) = chars.next() {
+                for n in chars.by_ref() {
                     if n.is_ascii_alphabetic() {
                         break;
                     }
@@ -139,7 +142,8 @@ fn persist_and_broadcast(entries: Vec<(String, String, i64)>) {
         let tx = conn.unchecked_transaction().ok();
         for (source, line, ts) in &entries {
             conn.execute(
-                "INSERT INTO logs (source, line, ts) VALUES (?1, ?2, ?3)",
+                "INSERT INTO logs (host_id, source, line, ts)
+                 VALUES ((SELECT id FROM hosts WHERE name = 'local'), ?1, ?2, ?3)",
                 rusqlite::params![source, line, ts],
             )
             .ok();

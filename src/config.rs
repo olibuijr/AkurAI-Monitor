@@ -14,12 +14,13 @@ pub struct Config {
     pub oidc_client_secret: String,
     pub oidc_redirect_uri: String,
     pub ingest_token: String,
+    pub api_token: String,
     pub journal_units: Vec<String>,
 }
 
 static CONFIG: LazyLock<Config> = LazyLock::new(|| {
-    let log_files_str =
-        std::env::var("MONITOR_LOG_FILES").unwrap_or_else(|_| "/var/log/syslog,/var/log/auth.log".to_string());
+    let log_files_str = std::env::var("MONITOR_LOG_FILES")
+        .unwrap_or_else(|_| "/var/log/syslog,/var/log/auth.log".to_string());
     let log_files: Vec<String> = log_files_str
         .split(',')
         .map(|s| s.trim().to_string())
@@ -35,10 +36,13 @@ static CONFIG: LazyLock<Config> = LazyLock::new(|| {
         .unwrap_or_else(|_| format!("{base_url}/auth/callback"));
 
     Config {
-        listen_addr: std::env::var("MONITOR_LISTEN").unwrap_or_else(|_| "127.0.0.1:8800".to_string()),
-        db_path: std::env::var("MONITOR_DB_PATH").unwrap_or_else(|_| "./data/monitor.db".to_string()),
+        listen_addr: std::env::var("MONITOR_LISTEN")
+            .unwrap_or_else(|_| "127.0.0.1:8800".to_string()),
+        db_path: std::env::var("MONITOR_DB_PATH")
+            .unwrap_or_else(|_| "./data/monitor.db".to_string()),
         static_dir: std::env::var("MONITOR_STATIC_DIR").unwrap_or_else(|_| "./ui".to_string()),
-        alert_log: std::env::var("MONITOR_ALERT_LOG").unwrap_or_else(|_| "./data/alerts.log".to_string()),
+        alert_log: std::env::var("MONITOR_ALERT_LOG")
+            .unwrap_or_else(|_| "./data/alerts.log".to_string()),
         log_files,
         interval_secs: std::env::var("MONITOR_INTERVAL")
             .ok()
@@ -58,6 +62,7 @@ static CONFIG: LazyLock<Config> = LazyLock::new(|| {
         oidc_client_secret: std::env::var("MONITOR_OIDC_CLIENT_SECRET").unwrap_or_default(),
         oidc_redirect_uri: redirect_uri,
         ingest_token: std::env::var("MONITOR_INGEST_TOKEN").unwrap_or_default(),
+        api_token: std::env::var("MONITOR_API_TOKEN").unwrap_or_default(),
         journal_units: std::env::var("MONITOR_JOURNAL_UNITS")
             .unwrap_or_default()
             .split(',')

@@ -1,14 +1,14 @@
 use axum::{
     extract::{Query, Request},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::LazyLock;
+use std::sync::Mutex;
 
 use crate::config;
 
@@ -86,21 +86,21 @@ static PENDING_FLOWS: LazyLock<Mutex<HashMap<String, (String, i64)>>> =
 
 fn get_session_email(headers: &axum::http::HeaderMap) -> Option<String> {
     let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
-    let session_id = cookie_header
-        .split(';')
-        .find_map(|pair| {
-            let pair = pair.trim();
-            let (k, v) = pair.split_once('=')?;
-            if k.trim() == SESSION_COOKIE {
-                Some(v.trim().to_string())
-            } else {
-                None
-            }
-        })?;
+    let session_id = cookie_header.split(';').find_map(|pair| {
+        let pair = pair.trim();
+        let (k, v) = pair.split_once('=')?;
+        if k.trim() == SESSION_COOKIE {
+            Some(v.trim().to_string())
+        } else {
+            None
+        }
+    })?;
 
     let mut sessions = SESSIONS.lock().unwrap();
     match sessions.get(&session_id) {
-        Some((email, created)) if chrono::Utc::now().timestamp() - created < SESSION_MAX_AGE as i64 => {
+        Some((email, created))
+            if chrono::Utc::now().timestamp() - created < SESSION_MAX_AGE as i64 =>
+        {
             Some(email.clone())
         }
         Some(_) => {
@@ -110,6 +110,16 @@ fn get_session_email(headers: &axum::http::HeaderMap) -> Option<String> {
         }
         None => None,
     }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+        == 0
 }
 
 pub async fn auth_middleware(request: Request, next: Next) -> Response {
@@ -128,6 +138,24 @@ pub async fn auth_middleware(request: Request, next: Next) -> Response {
         || path == "/themes.json"
     {
         return next.run(request).await;
+    }
+
+    if path.starts_with("/api/") {
+        let token = config::get().api_token.as_bytes();
+        let provided = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "));
+
+        if !token.is_empty()
+            && provided.map(|value| constant_time_eq(value.as_bytes(), token)) == Some(true)
+        {
+            return next.run(request).await;
+        }
+        if provided.is_some() {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
     }
 
     if get_session_email(request.headers()).is_some() {
@@ -226,20 +254,50 @@ pub async fn auth_callback(Query(q): Query<CallbackQuery>) -> impl IntoResponse 
         return (StatusCode::BAD_GATEWAY, "Invalid token response").into_response();
     };
 
-    // Extract email from ID token claims (we trust our own IDP)
-    let email = extract_email_from_id_token(&token_response).unwrap_or_else(|| "unknown".to_string());
+    let Some(access_token) = token_response
+        .get("access_token")
+        .and_then(|value| value.as_str())
+    else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            "Token response omitted access token",
+        )
+            .into_response();
+    };
+    let userinfo = client
+        .get(format!("{}/userinfo", cfg.oidc_issuer))
+        .bearer_auth(access_token)
+        .send()
+        .await;
+    let Ok(userinfo) = userinfo else {
+        return (StatusCode::BAD_GATEWAY, "Failed to verify identity").into_response();
+    };
+    if !userinfo.status().is_success() {
+        return (StatusCode::UNAUTHORIZED, "Identity verification failed").into_response();
+    }
+    let Ok(claims) = userinfo.json::<serde_json::Value>().await else {
+        return (StatusCode::BAD_GATEWAY, "Invalid userinfo response").into_response();
+    };
+    let Some(email) = claims
+        .get("email")
+        .and_then(|value| value.as_str())
+        .filter(|email| !email.is_empty())
+        .map(str::to_owned)
+    else {
+        return (StatusCode::UNAUTHORIZED, "Verified identity has no email").into_response();
+    };
 
     // Create session
     let session_id = generate_session_id();
-    SESSIONS
-        .lock()
-        .unwrap()
-        .insert(session_id.clone(), (email.clone(), chrono::Utc::now().timestamp()));
+    SESSIONS.lock().unwrap().insert(
+        session_id.clone(),
+        (email.clone(), chrono::Utc::now().timestamp()),
+    );
 
     tracing::info!(email, "user authenticated via OIDC");
 
     let cookie = format!(
-        "{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_MAX_AGE}"
+        "{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={SESSION_MAX_AGE}"
     );
 
     (
@@ -253,7 +311,7 @@ pub async fn auth_callback(Query(q): Query<CallbackQuery>) -> impl IntoResponse 
 }
 
 pub async fn auth_logout() -> impl IntoResponse {
-    let cookie = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    let cookie = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
     (
         StatusCode::SEE_OTHER,
         [
@@ -261,68 +319,6 @@ pub async fn auth_logout() -> impl IntoResponse {
             (header::LOCATION, "/".to_string()),
         ],
     )
-}
-
-fn extract_email_from_id_token(token_response: &serde_json::Value) -> Option<String> {
-    let id_token = token_response.get("id_token")?.as_str()?;
-    // Decode JWT payload (second segment) — we trust our own IDP, no signature verification needed
-    let parts: Vec<&str> = id_token.split('.').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let payload = base64_url_decode(parts[1])?;
-    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-    claims
-        .get("email")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
-    let mut s = input.replace('-', "+").replace('_', "/");
-    while s.len() % 4 != 0 {
-        s.push('=');
-    }
-    base64_decode::decode(&s)
-}
-
-mod base64_decode {
-    pub fn decode(input: &str) -> Option<Vec<u8>> {
-        let table: [u8; 128] = {
-            let mut t = [255u8; 128];
-            for (i, &c) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".iter().enumerate() {
-                t[c as usize] = i as u8;
-            }
-            t[b'=' as usize] = 0;
-            t
-        };
-
-        let bytes: Vec<u8> = input.bytes().filter(|&b| b != b'\n' && b != b'\r').collect();
-        let mut result = Vec::with_capacity(bytes.len() * 3 / 4);
-
-        for chunk in bytes.chunks(4) {
-            if chunk.len() != 4 {
-                return None;
-            }
-            let vals: Vec<u8> = chunk
-                .iter()
-                .map(|&b| if b < 128 { table[b as usize] } else { 255 })
-                .collect();
-            if vals.iter().any(|&v| v == 255) {
-                return None;
-            }
-            let triple = ((vals[0] as u32) << 18) | ((vals[1] as u32) << 12) | ((vals[2] as u32) << 6) | (vals[3] as u32);
-            result.push((triple >> 16) as u8);
-            if chunk[2] != b'=' {
-                result.push((triple >> 8) as u8);
-            }
-            if chunk[3] != b'=' {
-                result.push(triple as u8);
-            }
-        }
-
-        Some(result)
-    }
 }
 
 fn urlenc(s: &str) -> String {

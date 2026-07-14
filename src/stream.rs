@@ -1,10 +1,10 @@
 use std::convert::Infallible;
 use std::sync::OnceLock;
 
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use tokio::sync::broadcast;
-use tokio_stream::{wrappers::BroadcastStream, StreamExt};
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 
 #[derive(Clone)]
 pub struct Msg {
